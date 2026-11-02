@@ -4,7 +4,8 @@ import {
   parseSearchQuery,
   normalizeSearchQuery,
   resolveBookCode,
-  extractLanguageModifiers
+  extractLanguageModifiers,
+  extractScriptureCitation
 } from "../../features/references/parser";
 
 describe("normalizeSearchQuery", () => {
@@ -79,7 +80,22 @@ describe("extractLanguageModifiers", () => {
 
   it("handles multiple tags", () => {
     const result = extractLanguageModifiers("John 3:16 @sigao @catholic");
+    expect(result.translationId).toBe("sigao");
+    expect(result.rightTranslationId).toBe("catholic_org");
+  });
+
+  it("extracts parallel translations in correct left-to-right order with slash syntax", () => {
+    const result = extractLanguageModifiers("gen 1 /eng lat");
+    expect(result.reference).toBe("gen 1");
     expect(result.translationId).toBe("catholic_org");
+    expect(result.rightTranslationId).toBe("vulgate");
+  });
+
+  it("extracts parallel translations when order is reversed", () => {
+    const result = extractLanguageModifiers("gen 1 /lat eng");
+    expect(result.reference).toBe("gen 1");
+    expect(result.translationId).toBe("vulgate");
+    expect(result.rightTranslationId).toBe("catholic_org");
   });
 });
 
@@ -143,6 +159,14 @@ describe("parseReference", () => {
     expect(result?.translationId).toBe("sigao");
   });
 
+  it("handles parallel translation tags with correct panel mapping", () => {
+    const result = parseReference("gen 1 /eng lat");
+    expect(result?.panel.bookCode).toBe("GEN");
+    expect(result?.panel.chapter).toBe(1);
+    expect(result?.translationId).toBe("catholic_org");
+    expect(result?.rightTranslationId).toBe("vulgate");
+  });
+
   it("defaults to chapter 1 for book-only queries", () => {
     const result = parseReference("John");
     expect(result?.panel.chapter).toBe(1);
@@ -187,5 +211,85 @@ describe("parseSearchQuery", () => {
   it("handles empty parts gracefully", () => {
     const results = parseSearchQuery("John 3:16, , Romans 8:28");
     expect(results).toHaveLength(2);
+  });
+
+  it("parses John 6:35, 38 into John 6:35 and John 6:38", () => {
+    const results = parseSearchQuery("John 6:35, 38");
+    expect(results).toHaveLength(2);
+    expect(results[0]).toEqual({
+      panel: { bookCode: "JHN", chapter: 6 },
+      verse: 35,
+      verseEnd: undefined,
+      translationId: undefined,
+      rightTranslationId: undefined
+    });
+    expect(results[1]).toEqual({
+      panel: { bookCode: "JHN", chapter: 6 },
+      verse: 38,
+      verseEnd: undefined,
+      translationId: undefined,
+      rightTranslationId: undefined
+    });
+  });
+
+  it("only renders a chapter if the number ends with ':'", () => {
+    const results = parseSearchQuery("John 6:35, 7:");
+    expect(results).toHaveLength(2);
+    expect(results[0].panel.chapter).toBe(6);
+    expect(results[0].verse).toBe(35);
+    expect(results[1].panel.chapter).toBe(7);
+    expect(results[1].verse).toBeUndefined();
+  });
+
+  it("handles verse ranges following a chapter:verse reference", () => {
+    const results = parseSearchQuery("John 6:35, 38-40");
+    expect(results).toHaveLength(2);
+    expect(results[0].verse).toBe(35);
+    expect(results[1].panel.chapter).toBe(6);
+    expect(results[1].verse).toBe(38);
+    expect(results[1].verseEnd).toBe(40);
+  });
+
+  it("handles parallel translation query preserving left and right panel translations", () => {
+    const results = parseSearchQuery("gen 1 /eng lat");
+    expect(results).toHaveLength(1);
+    expect(results[0].panel.bookCode).toBe("GEN");
+    expect(results[0].panel.chapter).toBe(1);
+    expect(results[0].translationId).toBe("catholic_org");
+    expect(results[0].rightTranslationId).toBe("vulgate");
+  });
+});
+
+describe("extractScriptureCitation", () => {
+  it("extracts clean Scripture citation with suffix notes", () => {
+    const res = extractScriptureCitation("John 1:1 (Vulgate: In principio erat Verbum)");
+    expect(res).not.toBeNull();
+    expect(res?.reference).toBe("John 1:1");
+    expect(res?.parsed.panel.bookCode).toBe("JHN");
+    expect(res?.parsed.panel.chapter).toBe(1);
+    expect(res?.parsed.verse).toBe(1);
+    expect(res?.suffixText).toBe("(Vulgate: In principio erat Verbum)");
+  });
+
+  it("extracts citation with verse range", () => {
+    const res = extractScriptureCitation("Luke 2:25-32 (Nunc Dimittis)");
+    expect(res).not.toBeNull();
+    expect(res?.reference).toBe("Luke 2:25-32");
+    expect(res?.parsed.panel.bookCode).toBe("LUK");
+    expect(res?.parsed.panel.chapter).toBe(2);
+    expect(res?.parsed.verse).toBe(25);
+    expect(res?.parsed.verseEnd).toBe(32);
+  });
+
+  it("extracts citation with prefix text", () => {
+    const res = extractScriptureCitation("CCC 1376 / John 6:51");
+    expect(res).not.toBeNull();
+    expect(res?.reference).toBe("John 6:51");
+    expect(res?.prefixText).toBe("CCC 1376 /");
+  });
+
+  it("returns null for non-Scripture citations", () => {
+    expect(extractScriptureCitation("Council of Trent (1546), CCC 120")).toBeNull();
+    expect(extractScriptureCitation("General Instruction of the Roman Missal (GIRM 346d)")).toBeNull();
   });
 });
